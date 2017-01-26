@@ -920,7 +920,7 @@ class User(object):
             if dm_channel and dm_channel.active:
                 buffer_list_update_next()
 
-        return #temporarily noop this
+        return  # temporarily noop this
         for channel in self.server.channels:
             if channel.has_user(self.identifier):
                 channel.update_nicklist(self.identifier)
@@ -933,7 +933,7 @@ class User(object):
             if dm_channel and dm_channel.active:
                 buffer_list_update_next()
 
-        return #temporarily noop this
+        return  # temporarily noop this
         if self.deleted:
             return
 
@@ -1145,7 +1145,7 @@ def command_register(current_buffer, args):
             # w.prnt(current_buffer, "https://slack.com/api/oauth.access?client_id={}&client_secret={}&code={}".format(CLIENT_ID, CLIENT_SECRET, aargs[0]))
             ret = urllib.urlopen("https://slack.com/api/oauth.access?client_id={}&client_secret={}&code={}".format(CLIENT_ID, CLIENT_SECRET, aargs[0])).read()
             d = json.loads(ret)
-            if d["ok"] == True:
+            if d["ok"]:
                 w.prnt(current_buffer, "Success! Access token is: " + d['access_token'])
             else:
                 w.prnt(current_buffer, "Failed! Error is: " + d['error'])
@@ -2171,7 +2171,7 @@ def buffer_switch_cb(signal, sig_type, data):
 
     new_channel = channels.find(data)
     if new_channel:
-        if new_channel.got_history == False:
+        if not new_channel.got_history:
             new_channel.get_history()
     # channel_name = current_buffer_name()
     previous_buffer = data
@@ -2296,7 +2296,7 @@ def async_slack_api_upload_request(token, request, post_data, priority=False):
         url = 'https://slack.com/api/{}'.format(request)
         file_path = os.path.expanduser(post_data["file"])
         if ' ' in file_path:
-            file_path = file_path.replace(' ','\ ')
+            file_path = file_path.replace(' ', '\ ')
         command = 'curl -F file=@{} -F channels={} -F token={} {}'.format(file_path, post_data["channels"], token, url)
         context = pickle.dumps({"request": request, "token": token, "post_data": post_data})
         w.hook_process(command, config.slack_timeout, "url_processor_cb", context)
@@ -2492,7 +2492,7 @@ class PluginConfig(object):
     # Set missing settings to their defaults. Load non-missing settings from
     # weechat configs.
     def __init__(self):
-        for key,default in self.settings.iteritems():
+        for key, default in self.settings.iteritems():
             if not w.config_get_plugin(key):
                 w.config_set_plugin(key, default)
         self.config_changed(None, None, None)
