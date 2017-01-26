@@ -10,6 +10,7 @@ from wee_slack import User
 from wee_slack import SearchList
 import wee_slack
 
+
 class FakeWeechat():
     """
     this is the thing that acts as "w." everywhere..
@@ -34,6 +35,7 @@ class FakeWeechat():
     def hdata_string(*args):
         return "testuser"
 
+
     def __getattr__(self, name):
         def method(*args):
             print "called {}".format(name)
@@ -44,6 +46,7 @@ class FakeWeechat():
 @pytest.fixture
 def fake_weechat():
     wee_slack.w = FakeWeechat()
+    wee_slack.config = wee_slack.PluginConfig()
     pass
 
 
@@ -53,7 +56,6 @@ def slack_debug():
 
 @pytest.fixture
 def server(fake_weechat, monkeypatch):
-#def server(monkeypatch, mychannels, myusers):
     def mock_connect_to_slack(*args):
         return True
     monkeypatch.setattr(SlackServer, 'connect_to_slack', mock_connect_to_slack)
@@ -83,7 +85,16 @@ def channel(monkeypatch, server):
     monkeypatch.setattr(Channel, 'set_topic', mock_do_nothing)
     monkeypatch.setattr(Channel, 'set_topic', mock_do_nothing)
     monkeypatch.setattr(Channel, 'buffer_prnt', mock_buffer_prnt)
-    mychannel = Channel(server, '#testchan', 'C2147483705', True, last_read=0, prepend_name="", members=[], topic="")
+    chan = {
+        "name": "#testchan",
+        "id": "C2147483705",
+        "is_open": "True",
+        "last_read": "0",
+        "prepend_name": "",
+        "members": [],
+        "topic": {"value": "sometopic"},
+        }
+    mychannel = Channel(server, **chan)
     return mychannel
 
 @pytest.fixture
@@ -95,7 +106,6 @@ def mychannels(channel):
 @pytest.fixture
 def user(monkeypatch, server):
     wee_slack.domain = None
-    wee_slack.colorize_nicks = True
     pass
     myuser = User(server, "testuser", 'U2147483697', presence="away")
     myuser.color = ''
