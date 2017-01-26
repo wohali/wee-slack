@@ -20,7 +20,7 @@ slack = wee_slack
     },
     {
         'input': "foo <#C2147483705> foo",
-        'output': "foo #testchan foo",
+        'output': "foo #test-chan foo",
     },
     {
         'input': "url: <https://example.com|example> suffix",
@@ -34,6 +34,10 @@ slack = wee_slack
         'input': "<@U2147483697|@othernick> multiple unfurl <https://example.com|example with spaces>",
         'output': "@othernick multiple unfurl https://example.com (example with spaces)",
     },
+#    {
+#        'input': "try the #test-chan channel",
+#        'output': "try the ",
+#    },
 ))
 def test_unfurl_refs(myservers, mychannels, myusers, case):
     slack.servers = myservers

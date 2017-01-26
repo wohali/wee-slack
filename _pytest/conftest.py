@@ -35,7 +35,6 @@ class FakeWeechat():
     def hdata_string(*args):
         return "testuser"
 
-
     def __getattr__(self, name):
         def method(*args):
             print "called {}".format(name)
@@ -70,30 +69,31 @@ def myservers(server):
     servers.append(server)
     return servers
 
-
-
 @pytest.fixture
 def channel(monkeypatch, server):
     def mock_buffer_prnt(*args):
         print "called buffer_prnt\n\twith args: {}".format(args)
         return
+
     def mock_do_nothing(*args):
         print args
         return True
+
     monkeypatch.setattr(Channel, 'create_buffer', mock_do_nothing)
     monkeypatch.setattr(Channel, 'attach_buffer', mock_do_nothing)
     monkeypatch.setattr(Channel, 'set_topic', mock_do_nothing)
     monkeypatch.setattr(Channel, 'set_topic', mock_do_nothing)
     monkeypatch.setattr(Channel, 'buffer_prnt', mock_buffer_prnt)
+
     chan = {
-        "name": "#testchan",
+        "name": "#test-chan",
         "id": "C2147483705",
         "is_open": "True",
         "last_read": "0",
         "prepend_name": "",
         "members": [],
         "topic": {"value": "sometopic"},
-        }
+    }
     mychannel = Channel(server, **chan)
     return mychannel
 
