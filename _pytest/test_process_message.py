@@ -1,6 +1,5 @@
 
 import wee_slack
-import pytest
 import json
 from collections import defaultdict
 
@@ -23,12 +22,11 @@ def test_process_message(slack_debug, monkeypatch, myservers, mychannels, myuser
 #        print args
 #    monkeypatch.setattr(wee_slack.Channel, 'buffer_prnt_changed', mock_buffer_prnt_changed)
 
-
     messages = []
-    messages.append( json.loads(open('_pytest/data/message-normal.json', 'r').read()) )
-    messages.append( json.loads(open('_pytest/data/message-normal2.json', 'r').read()) )
-    messages.append( json.loads(open('_pytest/data/message-changed.json', 'r').read()) )
-    messages.append( json.loads(open('_pytest/data/message-deleted.json', 'r').read()) )
+    messages.append(json.loads(open('_pytest/data/message-normal.json', 'r').read()))
+    messages.append(json.loads(open('_pytest/data/message-normal2.json', 'r').read()))
+    messages.append(json.loads(open('_pytest/data/message-changed.json', 'r').read()))
+    messages.append(json.loads(open('_pytest/data/message-deleted.json', 'r').read()))
     for m in messages:
         wee_slack.process_message(m)
     print "---"
