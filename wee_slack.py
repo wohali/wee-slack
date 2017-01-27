@@ -54,7 +54,14 @@ SLACK_API_TRANSLATOR = {
         "join": "channels.join",
         "leave": "groups.leave",
         "mark": "groups.mark",
+    },
+    "thread": {
+        "history": None,
+        "join": None,
+        "leave": None,
+        "mark": None,
     }
+
 
 }
 
@@ -72,6 +79,7 @@ def dbg(message, fout=False, main_buffer=False):
     """
     send debug output to the slack-debug buffer and optionally write to a file.
     """
+    global debug_string
     message = "DEBUG: {}".format(message)
     # message = message.encode('utf-8', 'replace')
     if fout:
@@ -79,7 +87,7 @@ def dbg(message, fout=False, main_buffer=False):
     if main_buffer:
             w.prnt("", "slack: " + message)
     else:
-        if slack_debug is not None:
+        if slack_debug and (not debug_string or debug_string in message):
             w.prnt(slack_debug, message)
 
 
@@ -870,6 +878,18 @@ class DmChannel(Channel):
     def update_nicklist(self, user=None):
         pass
 
+class ThreadChannel(Channel):
+    def __init__(self, server, **kwargs):
+        kwargs = {
+            "prepend_name": "#",
+            "name": "general-t1",
+            "id": -1,
+            "is_open": True,
+        }
+        super(ThreadChannel, self).__init__(server, **kwargs)
+        self.type = "thread"
+        w.buffer_set(self.channel_buffer, "short_name", " -thread1")
+
 
 class User(object):
 
@@ -1168,6 +1188,13 @@ def msg_command_cb(data, current_buffer, args):
             channel.send_message(message)
     return w.WEECHAT_RC_OK_EAT
 
+@slack_buffer_or_ignore
+def label_command_cb(data, current_buffer, args):
+    channel = channels.find(current_buffer)
+    if channel.type == 'thread':
+        aargs = args.split(None, 2)
+        new_name = " -" + aargs[1]
+        w.buffer_set(channel.channel_buffer, "short_name", new_name)
 
 @slack_buffer_required
 def command_upload(current_buffer, args):
@@ -2625,6 +2652,7 @@ if __name__ == "__main__":
             w.hook_command_run('/leave', 'part_command_cb', '')
             w.hook_command_run('/topic', 'topic_command_cb', '')
             w.hook_command_run('/msg', 'msg_command_cb', '')
+            w.hook_command_run('/label', 'label_command_cb', '')
             w.hook_command_run("/input complete_next", "complete_next_cb", "")
             w.hook_command_run('/away', 'away_command_cb', '')
             w.hook_completion("nicks", "complete @-nicks for slack",
