@@ -15,6 +15,7 @@ import sys
 import traceback
 import collections
 import ssl
+import random
 
 from websocket import create_connection, WebSocketConnectionClosedException
 
@@ -766,40 +767,37 @@ class Channel(object):
     def unset_scrolling(self):
         self.scrolling = False
 
-    def has_message(self, ts):
-        return self.messages.count(ts) > 0
+    def get_message(self, ts):
+        c = self.messages.count(ts)
+        if c > 0:
+            index = self.messages.index(ts)
+            return (True, index, self.messages[index])
+        else:
+            return (False, 0, None)
 
     def change_message(self, ts, text=None, suffix=''):
-        if self.has_message(ts):
-            message_index = self.messages.index(ts)
-
+        m = self.get_message(ts)
+        if m[0]:
             if text is not None:
-                self.messages[message_index].change_text(text)
-            text = render_message(self.messages[message_index].message_json, True)
+                self.messages[m[1]].change_text(text)
+            text = m[2].render(force=True)
 
             timestamp, time_id = ts.split(".", 2)
             timestamp = int(timestamp)
             modify_buffer_line(self.channel_buffer, text + suffix, timestamp, time_id)
             return True
 
-    def add_thread_reply(self, ts, reply_json):
-        if self.has_message(ts):
-            message_index = self.messages.index(ts)
-            self.messages[message_index].add_thread(reply_json)
-            self.change_message(ts)
-            return True
-
     def add_reaction(self, ts, reaction, user):
-        if self.has_message(ts):
-            message_index = self.messages.index(ts)
-            self.messages[message_index].add_reaction(reaction, user)
+        m = self.get_message(ts)
+        if m[0]:
+            self.messages[m[1]].add_reaction(reaction, user)
             self.change_message(ts)
             return True
 
     def remove_reaction(self, ts, reaction, user):
-        if self.has_message(ts):
-            message_index = self.messages.index(ts)
-            self.messages[message_index].remove_reaction(reaction, user)
+        m = self.get_message(ts)
+        if m[0]:
+            self.messages[m[1]].remove_reaction(reaction, user)
             self.change_message(ts)
             return True
 
@@ -832,10 +830,10 @@ class Channel(object):
             if "user" in message.message_json and "text" in message.message_json and message.message_json["user"] == self.server.users.find(self.server.nick).identifier:
                 return message.message_json
 
-    def store_message(self, message_json, from_me=False):
+    def store_message(self, message, from_me=False):
         if from_me:
-            message_json["user"] = self.server.users.find(self.server.nick).identifier
-        self.messages.append(Message(message_json))
+            message.message_json["user"] = self.server.users.find(self.server.nick).identifier
+        self.messages.append(message)
         if len(self.messages) > SCROLLBACK_SIZE:
             self.messages = self.messages[-SCROLLBACK_SIZE:]
 
@@ -887,15 +885,9 @@ class DmChannel(Channel):
 
 class ThreadChannel(Channel):
     def __init__(self, server, **kwargs):
-        kwargs = {
-            "prepend_name": "#",
-            "name": "general-t1",
-            "id": -1,
-            "is_open": True,
-        }
         super(ThreadChannel, self).__init__(server, **kwargs)
         self.type = "thread"
-        w.buffer_set(self.channel_buffer, "short_name", " -thread1")
+        w.buffer_set(self.channel_buffer, "short_name", " -{}".format(kwargs["shortname"]))
 
 
 class User(object):
@@ -1031,20 +1023,27 @@ class Bot(object):
 
 class Message(object):
 
-    def __init__(self, message_json):
+    def __init__(self, message_json, server=None, channel=None):
         self.message_json = message_json
+        self.server = server
+        self.channel = channel
         self.ts = message_json['ts']
         # split timestamp into time and counter
         self.ts_time, self.ts_counter = message_json['ts'].split('.')
-        self.threads = []
+        self.threads = None
+        self.thread_id = ""
+        self.unicodify()
+        if server:
+            self.sender = self.get_sender()
+
+    def unicodify(self):
+        if 'text' in self.message_json and type(self.message_json['text']) is not unicode:
+            self.message_json['text'] = self.message_json['text'].decode('UTF-8', 'replace')
 
     def change_text(self, new_text):
         if not isinstance(new_text, unicode):
             new_text = unicode(new_text, 'utf-8')
         self.message_json["text"] = new_text
-
-    def add_thread(self, thread_json):
-        self.threads.append(thread_json)
 
     def add_reaction(self, reaction, user):
         if "reactions" in self.message_json:
@@ -1067,11 +1066,94 @@ class Message(object):
         else:
             pass
 
+    def render(self, force=False):
+        # If we already have a rendered version in the object, just return that.
+        if not force and self.message_json.get("_rendered_text", ""):
+            return self.message_json["_rendered_text"]
+        else:
+            # server = servers.find(self.message_json["_server"])
+
+            if "fallback" in self.message_json:
+                text = self.message_json["fallback"]
+            elif "text" in self.message_json:
+                if self.message_json['text'] is not None:
+                    text = self.message_json["text"]
+                else:
+                    text = u""
+            else:
+                text = u""
+
+            text = unfurl_refs(text, ignore_alt_text=config.unfurl_ignore_alt_text)
+
+            text_before = (len(text) > 0)
+            text += unfurl_refs(unwrap_attachments(self.message_json, text_before), ignore_alt_text=config.unfurl_ignore_alt_text)
+
+            text = text.lstrip()
+            text = text.replace("\t", "    ")
+            text = text.replace("&lt;", "<")
+            text = text.replace("&gt;", ">")
+            text = text.replace("&amp;", "&")
+            text = text.encode('utf-8')
+
+            if self.threads:
+                text += " [Replies: {} Thread ID: {} ] ".format(len(self.threads), self.thread_id)
+                #for thread in self.threads:
+
+            if "reactions" in self.message_json:
+                text += create_reaction_string(self.message_json["reactions"])
+            self.message_json["_rendered_text"] = text
+
+            return text
+
+    def get_sender(self, utf8=True):
+        if 'bot_id' in self.message_json and self.message_json['bot_id'] is not None:
+            name = u"{} :]".format(self.server.bots.find(self.message_json["bot_id"]).formatted_name())
+        elif 'user' in self.message_json:
+            u = self.server.users.find(self.message_json['user'])
+            if u.is_bot:
+                name = u"{} :]".format(u.formatted_name())
+            else:
+                name = u.name
+        elif 'username' in self.message_json:
+            name = u"-{}-".format(self.message_json["username"])
+        elif 'service_name' in self.message_json:
+            name = u"-{}-".format(self.message_json["service_name"])
+        else:
+            name = u""
+        if utf8:
+            return name.encode('utf-8')
+        else:
+            return name
+
+    def become_thread(self):
+        dbg("became thread", main_buffer=True)
+        self.thread_id = ''.join(random.choice("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(4))
+        if not self.threads:
+            self.threads = []
+
+    def add_thread_message(self, message):
+        self.become_thread()
+        self.threads.append(message)
+        self.render(force=True)
+        self.channel.change_message(self.ts)
+        kwargs = {
+            "prepend_name": "#",
+            "name": self.channel.name,
+            "shortname": self.thread_id,
+            "id": -1,
+            "is_open": True,
+        }
+
+        self.server.add_channel(ThreadChannel(self.server, **kwargs))
+
     def __eq__(self, other):
         return self.ts_time == other or self.ts == other
 
     def __repr__(self):
-        return "{} {} {} {}\n    {}".format(self.ts_time, self.ts_counter, self.ts, self.message_json, self.threads)
+        t = 0
+        if self.threads:
+            t = len(self.threads)
+        return "{} {} {} {}\n    Thread count: {}".format(self.ts_time, self.ts_counter, self.ts, self.message_json, t)
 
     def __lt__(self, other):
         return self.ts < other.ts
@@ -1598,20 +1680,22 @@ def slack_websocket_cb(server, fd):
     return w.WEECHAT_RC_OK
 
 
-def process_reply(message_json):
-    server = servers.find(message_json["_server"])
-    identifier = message_json["reply_to"]
-    item = server.message_buffer.pop(identifier)
-    if 'text' in item and type(item['text']) is not unicode:
-        item['text'] = item['text'].decode('UTF-8', 'replace')
-    if "type" in item:
-        if item["type"] == "message" and "channel" in item.keys():
-            item["ts"] = message_json["ts"]
-            channels.find(item["channel"]).store_message(item, from_me=True)
-            text = unfurl_refs(item["text"], ignore_alt_text=config.unfurl_ignore_alt_text)
+def process_reply(reply_json):
+    server = servers.find(reply_json["_server"])
+    identifier = reply_json["reply_to"]
+    message_json = server.message_buffer.pop(identifier)
+    if "ts" in reply_json:
+        message_json["ts"] = reply_json["ts"]
 
-            channels.find(item["channel"]).buffer_prnt(server.nick, text, item["ts"])
-    dbg("REPLY {}".format(item))
+    m = Message(message_json, server=server)
+
+    if "type" in message_json:
+        if message_json["type"] == "message" and "channel" in message_json.keys():
+            message_json["ts"] = reply_json["ts"]
+            channels.find(message_json["channel"]).store_message(m, from_me=True)
+
+            channels.find(message_json["channel"]).buffer_prnt(server.nick, m.render(), m.ts)
+    dbg("REPLY {}".format(message_json))
 
 
 def process_pong(message_json):
@@ -1801,28 +1885,6 @@ def process_user_typing(message_json):
         channel.set_typing(server.users.find(message_json["user"]).name)
 
 
-def process_bot_enable(message_json):
-    process_bot_integration(message_json)
-
-
-def process_bot_disable(message_json):
-    process_bot_integration(message_json)
-
-
-def process_bot_integration(message_json):
-    server = servers.find(message_json["_server"])
-    channel = server.channels.find(message_json["channel"])
-
-    time = message_json['ts']
-    text = "{} {}".format(server.users.find(message_json['user']).formatted_name(),
-                          render_message(message_json))
-    bot_name = get_user(message_json, server)
-    bot_name = bot_name.encode('utf-8')
-    channel.buffer_prnt(bot_name, text, time)
-
-# todo: does this work?
-
-
 def process_error(message_json):
     pass
 
@@ -1915,106 +1977,78 @@ def modify_print_time(buffer, new_id, time):
     return w.WEECHAT_RC_OK
 
 
-def render_message(message_json, force=False):
-    # If we already have a rendered version in the object, just return that.
-    if not force and message_json.get("_rendered_text", ""):
-        return message_json["_rendered_text"]
-    else:
-        # server = servers.find(message_json["_server"])
-
-        if "fallback" in message_json:
-            text = message_json["fallback"]
-        elif "text" in message_json:
-            if message_json['text'] is not None:
-                text = message_json["text"]
-            else:
-                text = u""
-        else:
-            text = u""
-
-        text = unfurl_refs(text, ignore_alt_text=config.unfurl_ignore_alt_text)
-
-        text_before = (len(text) > 0)
-        text += unfurl_refs(unwrap_attachments(message_json, text_before), ignore_alt_text=config.unfurl_ignore_alt_text)
-
-        text = text.lstrip()
-        text = text.replace("\t", "    ")
-        text = text.replace("&lt;", "<")
-        text = text.replace("&gt;", ">")
-        text = text.replace("&amp;", "&")
-        text = text.encode('utf-8')
-
-        if "reactions" in message_json:
-            text += create_reaction_string(message_json["reactions"])
-        message_json["_rendered_text"] = text
-        return text
-
-
 def process_message(message_json, store=True):
-    try:
-        # send these subtype messages elsewhere
-        known_subtypes = [
-            #'message_replied',
-            'message_reply2',
-            'message_changed',
-            'message_deleted',
-            'channel_join',
-            'channel_leave',
-            'channel_topic',
-            'group_join',
-            'group_leave',
-            'group_topic',
-            'bot_enable',
-            'bot_disable'
-        ]
-        if "thread_ts" in message_json:
-            message_json["subtype"] = "message_reply2"
-        if "subtype" in message_json:
-            if message_json["subtype"] in known_subtypes:
-                proc[message_json["subtype"]](message_json)
+    #try:
+    # send these subtype messages elsewhere
+    known_subtypes = [
+        'thread_message',
+        'message_replied',
+        'message_changed',
+        'message_deleted',
+        'channel_join',
+        'channel_leave',
+        'channel_topic',
+        'group_join',
+        'group_leave',
+    ]
+    if "thread_ts" in message_json:
+        message_json["subtype"] = "thread_message"
+    if "subtype" in message_json:
+        if message_json["subtype"] in known_subtypes:
+            proc[message_json["subtype"]](message_json)
+
+    else:
+        server = servers.find(message_json["_server"])
+        channel = channels.find(message_json["channel"])
+
+        # do not process messages in unexpected channels
+        if not channel.active:
+            channel.open(False)
+            dbg("message came for closed channel {}".format(channel.name))
+            return
+
+        message = Message(message_json, server=server, channel=channel)
+        text = message.render()
+
+        # special case with actions.
+        if text.startswith("_") and text.endswith("_"):
+            text = text[1:-1]
+            if message.sender != channel.server.nick:
+                text = message.sender + " " + text
+            channel.buffer_prnt(w.prefix("action").rstrip(), text, message.ts)
 
         else:
-            server = servers.find(message_json["_server"])
-            channel = channels.find(message_json["channel"])
+            suffix = ''
+            if 'edited' in message_json:
+                suffix = ' (edited)'
+            channel.buffer_prnt(message.sender, text + suffix, message.ts)
 
-            # do not process messages in unexpected channels
-            if not channel.active:
-                channel.open(False)
-                dbg("message came for closed channel {}".format(channel.name))
-                return
+        if store:
+            channel.store_message(message)
+        dbg("NORMAL REPLY {}".format(message_json))
 
-            time = message_json['ts']
-            text = render_message(message_json)
-            name = get_user(message_json, server)
-            name = name.encode('utf-8')
+#    except Exception:
+#        channel = channels.find(message_json["channel"])
+#        dbg("cannot process message {}\n{}".format(message_json, traceback.format_exc()))
+#        if channel and ("text" in message_json) and message_json['text'] is not None:
+#            channel.buffer_prnt('unknown', message_json['text'])
 
-            # special case with actions.
-            if text.startswith("_") and text.endswith("_"):
-                text = text[1:-1]
-                if name != channel.server.nick:
-                    text = name + " " + text
-                channel.buffer_prnt(w.prefix("action").rstrip(), text, time)
-
-            else:
-                suffix = ''
-                if 'edited' in message_json:
-                    suffix = ' (edited)'
-                channel.buffer_prnt(name, text + suffix, time)
-
-            if store:
-                channel.store_message(message_json)
-
-    except Exception:
-        channel = channels.find(message_json["channel"])
-        dbg("cannot process message {}\n{}".format(message_json, traceback.format_exc()))
-        if channel and ("text" in message_json) and message_json['text'] is not None:
-            channel.buffer_prnt('unknown', message_json['text'])
-
-def process_message_reply2(message_json):
+def process_thread_message(message_json):
     dbg("REPLIEDDDD: " + str(message_json))
     channel = channels.find(message_json["channel"])
-    channel.change_message(message_json["thread_ts"], None, message_json["text"])
-    channel.add_thread(message_json["item"]["ts"], message_json)
+    server = channel.server
+    #threadinfo = channel.get_message(message_json["thread_ts"])
+    message = Message(message_json, server=server, channel=channel)
+    dbg(message, main_buffer=True)
+
+    orig = channel.get_message(message_json['thread_ts'])
+    if orig[0]:
+        channel.get_message(message_json['thread_ts'])[2].add_thread_message(message)
+    #if threadinfo[0]:
+    #    channel.messages[threadinfo[1]].become_thread()
+    #    message_json["item"]["ts"], message_json)
+    #channel.change_message(message_json["thread_ts"], None, message_json["text"])
+    #channel.become_thread(message_json["item"]["ts"], message_json)
 
 def process_message_changed(message_json):
     m = message_json["message"]
@@ -2046,117 +2080,6 @@ def process_message_deleted(message_json):
     channel = channels.find(message_json["channel"])
     channel.change_message(message_json["deleted_ts"], "(deleted)")
 
-
-def unwrap_attachments(message_json, text_before):
-    attachment_text = ''
-    if "attachments" in message_json:
-        if text_before:
-            attachment_text = u'\n'
-        for attachment in message_json["attachments"]:
-            # Attachments should be rendered roughly like:
-            #
-            # $pretext
-            # $author: (if rest of line is non-empty) $title ($title_link) OR $from_url
-            # $author: (if no $author on previous line) $text
-            # $fields
-            t = []
-            prepend_title_text = ''
-            if 'author_name' in attachment:
-                prepend_title_text = attachment['author_name'] + ": "
-            if 'pretext' in attachment:
-                t.append(attachment['pretext'])
-            if "title" in attachment:
-                if 'title_link' in attachment:
-                    t.append('%s%s (%s)' % (prepend_title_text, attachment["title"], attachment["title_link"],))
-                else:
-                    t.append(prepend_title_text + attachment["title"])
-                prepend_title_text = ''
-            elif "from_url" in attachment:
-                t.append(attachment["from_url"])
-            if "text" in attachment:
-                tx = re.sub(r' *\n[\n ]+', '\n', attachment["text"])
-                t.append(prepend_title_text + tx)
-                prepend_title_text = ''
-            if 'fields' in attachment:
-                for f in attachment['fields']:
-                    if f['title'] != '':
-                        t.append('%s %s' % (f['title'], f['value'],))
-                    else:
-                        t.append(f['value'])
-            if t == [] and "fallback" in attachment:
-                t.append(attachment["fallback"])
-            attachment_text += "\n".join([x.strip() for x in t if x])
-    return attachment_text
-
-
-def resolve_ref(ref):
-    if ref.startswith('@U') or ref.startswith('@W'):
-        if users.find(ref[1:]):
-            try:
-                return "@{}".format(users.find(ref[1:]).name)
-            except:
-                dbg("NAME: {}".format(ref))
-    elif ref.startswith('#C'):
-        if channels.find(ref[1:]):
-            try:
-                return "{}".format(channels.find(ref[1:]).name)
-            except:
-                dbg("CHANNEL: {}".format(ref))
-
-    # Something else, just return as-is
-    return ref
-
-
-def unfurl_ref(ref, ignore_alt_text=False):
-    id = ref.split('|')[0]
-    display_text = ref
-    if ref.find('|') > -1:
-        if ignore_alt_text:
-            display_text = resolve_ref(id)
-        else:
-            if id.startswith("#C") or id.startswith("@U"):
-                display_text = ref.split('|')[1]
-            else:
-                url, desc = ref.split('|', 1)
-                display_text = u"{} ({})".format(url, desc)
-    else:
-        display_text = resolve_ref(ref)
-    return display_text
-
-
-def unfurl_refs(text, ignore_alt_text=False):
-    """
-    input : <@U096Q7CQM|someuser> has joined the channel
-    ouput : someuser has joined the channel
-    """
-    # Find all strings enclosed by <>
-    #  - <https://example.com|example with spaces>
-    #  - <#C2147483705|#otherchannel>
-    #  - <@U2147483697|@othernick>
-    # Test patterns lives in ./_pytest/test_unfurl.py
-    matches = re.findall(r"(<[@#]?(?:[^<]*)>)", text)
-    for m in matches:
-        # Replace them with human readable strings
-        text = text.replace(m, unfurl_ref(m[1:-1], ignore_alt_text))
-    return text
-
-
-def get_user(message_json, server):
-    if 'bot_id' in message_json and message_json['bot_id'] is not None:
-        name = u"{} :]".format(server.bots.find(message_json["bot_id"]).formatted_name())
-    elif 'user' in message_json:
-        u = server.users.find(message_json['user'])
-        if u.is_bot:
-            name = u"{} :]".format(u.formatted_name())
-        else:
-            name = u.name
-    elif 'username' in message_json:
-        name = u"-{}-".format(message_json["username"])
-    elif 'service_name' in message_json:
-        name = u"-{}-".format(message_json["service_name"])
-    else:
-        name = u""
-    return name
 
 # END Websocket handling methods
 
@@ -2447,6 +2370,99 @@ def cache_load():
 
 # Utility Methods
 
+def unwrap_attachments(message_json, text_before):
+    attachment_text = ''
+    if "attachments" in message_json:
+        if text_before:
+            attachment_text = u'\n'
+        for attachment in message_json["attachments"]:
+            # Attachments should be rendered roughly like:
+            #
+            # $pretext
+            # $author: (if rest of line is non-empty) $title ($title_link) OR $from_url
+            # $author: (if no $author on previous line) $text
+            # $fields
+            t = []
+            prepend_title_text = ''
+            if 'author_name' in attachment:
+                prepend_title_text = attachment['author_name'] + ": "
+            if 'pretext' in attachment:
+                t.append(attachment['pretext'])
+            if "title" in attachment:
+                if 'title_link' in attachment:
+                    t.append('%s%s (%s)' % (prepend_title_text, attachment["title"], attachment["title_link"],))
+                else:
+                    t.append(prepend_title_text + attachment["title"])
+                prepend_title_text = ''
+            elif "from_url" in attachment:
+                t.append(attachment["from_url"])
+            if "text" in attachment:
+                tx = re.sub(r' *\n[\n ]+', '\n', attachment["text"])
+                t.append(prepend_title_text + tx)
+                prepend_title_text = ''
+            if 'fields' in attachment:
+                for f in attachment['fields']:
+                    if f['title'] != '':
+                        t.append('%s %s' % (f['title'], f['value'],))
+                    else:
+                        t.append(f['value'])
+            if t == [] and "fallback" in attachment:
+                t.append(attachment["fallback"])
+            attachment_text += "\n".join([x.strip() for x in t if x])
+    return attachment_text
+
+
+def resolve_ref(ref):
+    if ref.startswith('@U') or ref.startswith('@W'):
+        if users.find(ref[1:]):
+            try:
+                return "@{}".format(users.find(ref[1:]).name)
+            except:
+                dbg("NAME: {}".format(ref))
+    elif ref.startswith('#C'):
+        if channels.find(ref[1:]):
+            try:
+                return "{}".format(channels.find(ref[1:]).name)
+            except:
+                dbg("CHANNEL: {}".format(ref))
+
+    # Something else, just return as-is
+    return ref
+
+
+def unfurl_ref(ref, ignore_alt_text=False):
+    id = ref.split('|')[0]
+    display_text = ref
+    if ref.find('|') > -1:
+        if ignore_alt_text:
+            display_text = resolve_ref(id)
+        else:
+            if id.startswith("#C") or id.startswith("@U"):
+                display_text = ref.split('|')[1]
+            else:
+                url, desc = ref.split('|', 1)
+                display_text = u"{} ({})".format(url, desc)
+    else:
+        display_text = resolve_ref(ref)
+    return display_text
+
+
+def unfurl_refs(text, ignore_alt_text=False):
+    """
+    input : <@U096Q7CQM|someuser> has joined the channel
+    ouput : someuser has joined the channel
+    """
+    # Find all strings enclosed by <>
+    #  - <https://example.com|example with spaces>
+    #  - <#C2147483705|#otherchannel>
+    #  - <@U2147483697|@othernick>
+    # Test patterns lives in ./_pytest/test_unfurl.py
+    matches = re.findall(r"(<[@#]?(?:[^<]*)>)", text)
+    for m in matches:
+        # Replace them with human readable strings
+        text = text.replace(m, unfurl_ref(m[1:-1], ignore_alt_text))
+    return text
+
 
 def current_domain_name():
     buffer = w.current_buffer()
@@ -2650,6 +2666,7 @@ if __name__ == "__main__":
                 servers.append(server)
             channels = SearchList()
             users = SearchList()
+            threads = SearchList()
 
             w.hook_config("plugins.var.python." + SCRIPT_NAME + ".*", "config_changed_cb", "")
             w.hook_timer(3000, 0, 0, "slack_connection_persistence_cb", "")
