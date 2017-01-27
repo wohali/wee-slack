@@ -782,6 +782,13 @@ class Channel(object):
             modify_buffer_line(self.channel_buffer, text + suffix, timestamp, time_id)
             return True
 
+    def add_thread_reply(self, ts, reply_json):
+        if self.has_message(ts):
+            message_index = self.messages.index(ts)
+            self.messages[message_index].add_thread(reply_json)
+            self.change_message(ts)
+            return True
+
     def add_reaction(self, ts, reaction, user):
         if self.has_message(ts):
             message_index = self.messages.index(ts)
@@ -1029,11 +1036,15 @@ class Message(object):
         self.ts = message_json['ts']
         # split timestamp into time and counter
         self.ts_time, self.ts_counter = message_json['ts'].split('.')
+        self.threads = []
 
     def change_text(self, new_text):
         if not isinstance(new_text, unicode):
             new_text = unicode(new_text, 'utf-8')
         self.message_json["text"] = new_text
+
+    def add_thread(self, thread_json):
+        self.threads.append(thread_json)
 
     def add_reaction(self, reaction, user):
         if "reactions" in self.message_json:
@@ -1060,11 +1071,15 @@ class Message(object):
         return self.ts_time == other or self.ts == other
 
     def __repr__(self):
-        return "{} {} {} {}\n".format(self.ts_time, self.ts_counter, self.ts, self.message_json)
+        return "{} {} {} {}\n    {}".format(self.ts_time, self.ts_counter, self.ts, self.message_json, self.threads)
 
     def __lt__(self, other):
         return self.ts < other.ts
 
+class Thread(object):
+    def __init__(self, identifier):
+        self.identifier = identifier
+        pass
 
 def slack_buffer_or_ignore(f):
     """
@@ -1938,9 +1953,25 @@ def render_message(message_json, force=False):
 def process_message(message_json, store=True):
     try:
         # send these subtype messages elsewhere
-        known_subtypes = ["message_changed", 'message_deleted', 'channel_join', 'channel_leave', 'channel_topic', 'group_join', 'group_leave', 'group_topic', 'bot_enable', 'bot_disable']
-        if "subtype" in message_json and message_json["subtype"] in known_subtypes:
-            proc[message_json["subtype"]](message_json)
+        known_subtypes = [
+            #'message_replied',
+            'message_reply2',
+            'message_changed',
+            'message_deleted',
+            'channel_join',
+            'channel_leave',
+            'channel_topic',
+            'group_join',
+            'group_leave',
+            'group_topic',
+            'bot_enable',
+            'bot_disable'
+        ]
+        if "thread_ts" in message_json:
+            message_json["subtype"] = "message_reply2"
+        if "subtype" in message_json:
+            if message_json["subtype"] in known_subtypes:
+                proc[message_json["subtype"]](message_json)
 
         else:
             server = servers.find(message_json["_server"])
@@ -1979,6 +2010,11 @@ def process_message(message_json, store=True):
         if channel and ("text" in message_json) and message_json['text'] is not None:
             channel.buffer_prnt('unknown', message_json['text'])
 
+def process_message_reply2(message_json):
+    dbg("REPLIEDDDD: " + str(message_json))
+    channel = channels.find(message_json["channel"])
+    channel.change_message(message_json["thread_ts"], None, message_json["text"])
+    channel.add_thread(message_json["item"]["ts"], message_json)
 
 def process_message_changed(message_json):
     m = message_json["message"]
