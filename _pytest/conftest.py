@@ -46,6 +46,7 @@ class FakeWeechat():
 def fake_weechat():
     wee_slack.w = FakeWeechat()
     wee_slack.config = wee_slack.PluginConfig()
+    wee_slack.debug_string = None
     pass
 
 
