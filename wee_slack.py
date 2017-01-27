@@ -1982,7 +1982,7 @@ def process_message(message_json, store=True):
     # send these subtype messages elsewhere
     known_subtypes = [
         'thread_message',
-        'message_replied',
+        #'message_replied',
         'message_changed',
         'message_deleted',
         'channel_join',
@@ -1991,7 +1991,7 @@ def process_message(message_json, store=True):
         'group_join',
         'group_leave',
     ]
-    if "thread_ts" in message_json:
+    if "thread_ts" in message_json and "reply_count" not in message_json:
         message_json["subtype"] = "thread_message"
     if "subtype" in message_json:
         if message_json["subtype"] in known_subtypes:
@@ -2044,6 +2044,9 @@ def process_thread_message(message_json):
     orig = channel.get_message(message_json['thread_ts'])
     if orig[0]:
         channel.get_message(message_json['thread_ts'])[2].add_thread_message(message)
+    else:
+        dbg("COULDN'T find orig message {}".format(message_json['thread_ts']), main_buffer=True)
+
     #if threadinfo[0]:
     #    channel.messages[threadinfo[1]].become_thread()
     #    message_json["item"]["ts"], message_json)
