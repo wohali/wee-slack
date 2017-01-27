@@ -1139,6 +1139,13 @@ class Message(object):
         self.threads.append(message)
         self.render(force=True)
         self.channel.change_message(self.ts)
+        c = channels.find(self.channel.name + self.thread_id)
+        if not c:
+            self.open_thread_channel()
+        else:
+            c.buffer_prnt(w.prefix("action").rstrip(), message.render(), self.ts)
+
+    def open_thread_channel(self):
         kwargs = {
             "prepend_name": "",
             "name": self.channel.name,
@@ -1148,6 +1155,10 @@ class Message(object):
         }
 
         self.server.add_channel(ThreadChannel(self.server, **kwargs))
+        c = channels.find(self.channel.name + self.thread_id)
+        for thread in self.threads:
+            c.buffer_prnt(w.prefix("action").rstrip(), thread.render(), self.ts)
+            #dbg("MEHHHH {}".format(thread.render()), main_buffer=True)
 
     def __eq__(self, other):
         return self.ts_time == other or self.ts == other
