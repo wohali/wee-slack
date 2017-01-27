@@ -817,7 +817,7 @@ class Channel(object):
             if "user" in message.message_json and "text" in message.message_json and message.message_json["user"] == self.server.users.find(self.server.nick).identifier:
                 return message.message_json
 
-    def cache_message(self, message_json, from_me=False):
+    def store_message(self, message_json, from_me=False):
         if from_me:
             message_json["user"] = self.server.users.find(self.server.nick).identifier
         self.messages.append(Message(message_json))
@@ -826,8 +826,9 @@ class Channel(object):
 
     def get_history(self):
         if self.active:
-            for message in message_cache[self.identifier]:
-                process_message(json.loads(message), True)
+            if config.cache_messages:
+                for message in message_cache[self.identifier]:
+                    process_message(json.loads(message), True)
             async_slack_api_request(self.server.domain, self.server.token, SLACK_API_TRANSLATOR[self.type]["history"], {"channel": self.identifier, "count": BACKLOG_SIZE})
         self.got_history = True
 
@@ -1564,10 +1565,10 @@ def process_reply(message_json):
     if "type" in item:
         if item["type"] == "message" and "channel" in item.keys():
             item["ts"] = message_json["ts"]
-            channels.find(item["channel"]).cache_message(item, from_me=True)
+            channels.find(item["channel"]).store_message(item, from_me=True)
             text = unfurl_refs(item["text"], ignore_alt_text=config.unfurl_ignore_alt_text)
 
-            channels.find(item["channel"]).buffer_prnt(item["user"], text, item["ts"])
+            channels.find(item["channel"]).buffer_prnt(server.nick, text, item["ts"])
     dbg("REPLY {}".format(item))
 
 
@@ -1907,7 +1908,7 @@ def render_message(message_json, force=False):
         return text
 
 
-def process_message(message_json, cache=True):
+def process_message(message_json, store=True):
     try:
         # send these subtype messages elsewhere
         known_subtypes = ["message_changed", 'message_deleted', 'channel_join', 'channel_leave', 'channel_topic', 'group_join', 'group_leave', 'group_topic', 'bot_enable', 'bot_disable']
@@ -1942,8 +1943,8 @@ def process_message(message_json, cache=True):
                     suffix = ' (edited)'
                 channel.buffer_prnt(name, text + suffix, time)
 
-            if cache:
-                channel.cache_message(message_json)
+            if store:
+                channel.store_message(message_json)
 
     except Exception:
         channel = channels.find(message_json["channel"])
@@ -2287,7 +2288,7 @@ def async_slack_api_request(domain, token, request, post_data, priority=False):
         url = 'url:https://{}/api/{}?{}'.format(domain, request, urllib.urlencode(post_data))
         context = pickle.dumps({"request": request, "token": token, "post_data": post_data})
         params = {'useragent': 'wee_slack {}'.format(SCRIPT_VERSION)}
-        dbg("URL: {} context: {} params: {}".format(url, context, params))
+        dbg("SLACK REQUEST: {} context: {} params: {}".format(url, json.dumps(context), params))
         w.hook_process_hashtable(url, params, config.slack_timeout, "url_processor_cb", context)
 
 
@@ -2350,32 +2351,34 @@ def url_processor_cb(data, command, return_code, out, err):
 
 
 def cache_write_cb(data, remaining):
-    cache_file = open("{}/{}".format(WEECHAT_HOME, CACHE_NAME), 'w')
-    cache_file.write(CACHE_VERSION + "\n")
-    for channel in channels:
-        if channel.active:
-            for message in channel.messages:
-                cache_file.write("{}\n".format(json.dumps(message.message_json)))
-    return w.WEECHAT_RC_OK
+    if config.cache_messages:
+        cache_file = open("{}/{}".format(WEECHAT_HOME, CACHE_NAME), 'w')
+        cache_file.write(CACHE_VERSION + "\n")
+        for channel in channels:
+            if channel.active:
+                for message in channel.messages:
+                    cache_file.write("{}\n".format(json.dumps(message.message_json)))
+        return w.WEECHAT_RC_OK
 
 
 def cache_load():
-    global message_cache
-    try:
-        file_name = "{}/{}".format(WEECHAT_HOME, CACHE_NAME)
-        cache_file = open(file_name, 'r')
-        if cache_file.readline() == CACHE_VERSION + "\n":
-            dbg("Loading messages from cache.", main_buffer=True)
-            for line in cache_file:
-                j = json.loads(line)
-                message_cache[j["channel"]].append(line)
-            dbg("Completed loading messages from cache.", main_buffer=True)
-    except ValueError:
-        w.prnt("", "Failed to load cache file, probably illegal JSON.. Ignoring")
-        pass
-    except IOError:
-        w.prnt("", "cache file not found")
-        pass
+    if config.cache_messages:
+        global message_cache
+        try:
+            file_name = "{}/{}".format(WEECHAT_HOME, CACHE_NAME)
+            cache_file = open(file_name, 'r')
+            if cache_file.readline() == CACHE_VERSION + "\n":
+                dbg("Loading messages from cache.", main_buffer=True)
+                for line in cache_file:
+                    j = json.loads(line)
+                    message_cache[j["channel"]].append(line)
+                dbg("Completed loading messages from cache.", main_buffer=True)
+        except ValueError:
+            w.prnt("", "Failed to load cache file, probably illegal JSON.. Ignoring")
+            pass
+        except IOError:
+            w.prnt("", "cache file not found")
+            pass
 
 # END Slack specific requests
 
@@ -2487,6 +2490,7 @@ class PluginConfig(object):
         'switch_buffer_on_join': 'true',
         'trigger_value': 'false',
         'unfurl_ignore_alt_text': 'false',
+        'cache_messages': 'true',
     }
 
     # Set missing settings to their defaults. Load non-missing settings from
@@ -2574,7 +2578,8 @@ if __name__ == "__main__":
             main_weechat_buffer = w.info_get("irc_buffer", "{}.{}".format(domain, "DOESNOTEXIST!@#$"))
 
             message_cache = collections.defaultdict(list)
-            cache_load()
+            if config.cache_messages:
+                cache_load()
 
             servers = SearchList()
             for token in config.slack_api_token.split(','):
