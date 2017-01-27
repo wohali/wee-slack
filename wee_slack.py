@@ -884,12 +884,24 @@ class DmChannel(Channel):
         pass
 
 class ThreadChannel(Channel):
+
     def __init__(self, server, **kwargs):
         #use channel name + timestamp as longform name for now
         kwargs['name'] = kwargs['name'] + kwargs['shortname']
+        self.channel_identifier = kwargs['channel_identifier']
         super(ThreadChannel, self).__init__(server, **kwargs)
+        self.thread_id = kwargs['thread_id']
         self.type = "thread"
         w.buffer_set(self.channel_buffer, "short_name", " -{}".format(kwargs["shortname"]))
+
+    def send_message(self, message):
+        message = self.linkify_text(message)
+        dbg(message)
+        request = {"type": "message", "channel": self.channel_identifier, "text": message, "_server": self.server.domain, "thread_ts": self.thread_id}
+        dbg(request)
+        self.server.send_to_websocket(request)
+
+        dbg("would have sent {}".format(message), main_buffer=True)
 
 
 class User(object):
@@ -1149,7 +1161,9 @@ class Message(object):
         kwargs = {
             "prepend_name": "",
             "name": self.channel.name,
+            "channel_identifier": self.channel.identifier,
             "shortname": self.thread_id,
+            "thread_id": self.thread_id,
             "id": -1,
             "is_open": True,
         }
@@ -1683,13 +1697,13 @@ def slack_websocket_cb(server, fd):
         function_name = message_json["type"]
     else:
         function_name = "unknown"
-    try:
-        proc[function_name](message_json)
-    except KeyError:
-        if function_name:
-            dbg("Function not implemented: {}\n{}".format(function_name, message_json))
-        else:
-            dbg("Function not implemented\n{}".format(message_json))
+#    try:
+    proc[function_name](message_json)
+#    except KeyError:
+#        if function_name:
+#            dbg("Function not implemented: {}\n{}".format(function_name, message_json))
+#        else:
+#            dbg("Function not implemented\n{}".format(message_json))
     w.bar_item_update("slack_typing_notice")
     return w.WEECHAT_RC_OK
 
@@ -1700,6 +1714,8 @@ def process_reply(reply_json):
     message_json = server.message_buffer.pop(identifier)
     if "ts" in reply_json:
         message_json["ts"] = reply_json["ts"]
+    else:
+        dbg("no reply ts {}".format(reply_json))
 
     m = Message(message_json, server=server)
 
@@ -1708,7 +1724,8 @@ def process_reply(reply_json):
             message_json["ts"] = reply_json["ts"]
             channels.find(message_json["channel"]).store_message(m, from_me=True)
 
-            channels.find(message_json["channel"]).buffer_prnt(server.nick, m.render(), m.ts)
+            #channels.find(message_json["channel"]).buffer_prnt(server.nick, m.render(), m.ts)
+    process_message(m.message_json)
     dbg("REPLY {}".format(message_json))
 
 
