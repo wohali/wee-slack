@@ -15,7 +15,7 @@ import sys
 import traceback
 import collections
 import ssl
-import random
+#import random
 
 from websocket import create_connection, WebSocketConnectionClosedException
 
@@ -885,6 +885,8 @@ class DmChannel(Channel):
 
 class ThreadChannel(Channel):
     def __init__(self, server, **kwargs):
+        #use channel name + timestamp as longform name for now
+        kwargs['name'] = kwargs['name'] + kwargs['shortname']
         super(ThreadChannel, self).__init__(server, **kwargs)
         self.type = "thread"
         w.buffer_set(self.channel_buffer, "short_name", " -{}".format(kwargs["shortname"]))
@@ -1127,7 +1129,8 @@ class Message(object):
 
     def become_thread(self):
         dbg("became thread", main_buffer=True)
-        self.thread_id = ''.join(random.choice("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(4))
+        #self.thread_id = ''.join(random.choice("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(4))
+        self.thread_id = self.ts
         if not self.threads:
             self.threads = []
 
@@ -1137,7 +1140,7 @@ class Message(object):
         self.render(force=True)
         self.channel.change_message(self.ts)
         kwargs = {
-            "prepend_name": "#",
+            "prepend_name": "",
             "name": self.channel.name,
             "shortname": self.thread_id,
             "id": -1,
@@ -2347,7 +2350,7 @@ def cache_write_cb(data, remaining):
             if channel.active:
                 for message in channel.messages:
                     cache_file.write("{}\n".format(json.dumps(message.message_json)))
-        return w.WEECHAT_RC_OK
+    return w.WEECHAT_RC_OK
 
 
 def cache_load():
